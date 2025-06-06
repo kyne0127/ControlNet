@@ -91,9 +91,10 @@ class ControlNetConditioningEmbedding(nn.Module):
             self.blocks.append(nn.Conv2d(channel_in, channel_in, kernel_size=3, padding=1))
             self.blocks.append(nn.Conv2d(channel_in, channel_out, kernel_size=3, padding=1, stride=2))
 
-        self.conv_out = zero_module(
-            nn.Conv2d(block_out_channels[-1], conditioning_embedding_channels, kernel_size=3, padding=1)
-        )
+        self.conv_out = nn.Conv2d(block_out_channels[-1], conditioning_embedding_channels, kernel_size=3, padding=1)
+        # self.conv_out = zero_module(
+        #     nn.Conv2d(block_out_channels[-1], conditioning_embedding_channels, kernel_size=3, padding=1)
+        # )
 
     def forward(self, conditioning):
         embedding = self.conv_in(conditioning)
@@ -824,10 +825,11 @@ class MyControlNetModel(ControlNetModel, ModelMixin, ConfigMixin, FromOriginalMo
         emb = emb + aug_emb if aug_emb is not None else emb
 
         # 2. pre-process
-        sample = self.conv_in(sample)
+        # sample = self.conv_in(sample)
 
         controlnet_cond = self.controlnet_cond_embedding(controlnet_cond)
-        sample = sample + controlnet_cond
+        # sample = sample + controlnet_cond
+        sample = controlnet_cond
 
         # 3. down
         down_block_res_samples = (sample,)
