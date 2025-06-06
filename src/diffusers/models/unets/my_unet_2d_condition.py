@@ -1330,21 +1330,7 @@ class MyUNet2DConditionModel(
                 sample += down_intrablock_additional_residuals.pop(0)
 
         if is_controlnet:
-            var_per_channel = torch.var(sample, dim=(2,3), unbiased=False)
-            var_per_channel_additional = torch.var(mid_block_additional_residual, dim=(2,3), unbiased=False)
-
-            var_per_channel_mean = var_per_channel.mean(dim=0)
-            var_per_channel_additional_mean = var_per_channel_additional.mean(dim=0)
-
-            num_channels = sample.shape[1]
-            k = int(num_channels * 0.1)
-
-            _, low_var_indices = torch.topk(var_per_channel_mean, k=k, largest=False)
-            _, high_var_indices = torch.topk(var_per_channel_additional_mean, k=k, largest=True)
-                
-            blended = sample.clone()
-            blended[:,low_var_indices] = alpha*sample[:,low_var_indices] + (1-alpha)*mid_block_additional_residual[:,high_var_indices]
-            sample = blended
+            sample = sample + mid_block_additional_residual
 
         # 5. up
         for i, upsample_block in enumerate(self.up_blocks):
