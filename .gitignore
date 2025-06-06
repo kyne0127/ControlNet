@@ -176,3 +176,6 @@ tags
 
 # wandb
 wandb
+
+#example files
+examples/controlnet/output
