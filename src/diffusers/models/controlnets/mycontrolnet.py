@@ -440,7 +440,7 @@ class MyControlNetModel(ControlNetModel, ModelMixin, ConfigMixin, FromOriginalMo
         mid_block_channel = block_out_channels[-1]
 
         controlnet_block = nn.Conv2d(mid_block_channel, mid_block_channel, kernel_size=1)
-        # controlnet_block = zero_module(controlnet_block)
+        controlnet_block = zero_module(controlnet_block)
         self.controlnet_mid_block = controlnet_block
 
         if mid_block_type == "UNetMidBlock2DCrossAttn":
