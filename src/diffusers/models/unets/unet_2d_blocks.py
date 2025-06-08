@@ -2541,6 +2541,8 @@ class UpBlock2D(nn.Module):
             and getattr(self, "b2", None)
         )
 
+        # print(f"[DBG] UpBlock2D: before norm1 -> input.shape={hidden_states.shape}")
+
         for resnet in self.resnets:
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]

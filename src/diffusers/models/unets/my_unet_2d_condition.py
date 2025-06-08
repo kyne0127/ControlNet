@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
+import torch.nn.functional as F
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...loaders import PeftAdapterMixin, UNet2DConditionLoadersMixin
@@ -1284,28 +1285,46 @@ class MyUNet2DConditionModel(
         수정한 부분
         """
         if is_controlnet:
-            new_down_block_res_samples = ()
+            # down_block_additional_residuals 길이만큼만 blend
+            num_add = len(down_block_additional_residuals)
+            # 원본 리스트 분할
+            orig = list(down_block_res_samples)
+            head = orig[:-num_add]             # 섞지 않을 앞부분
+            tail = orig[-num_add:]             # blend 할 마지막 부분
 
-            for down_block_res_sample, down_block_additional_residual in zip(
-                down_block_res_samples, down_block_additional_residuals
-            ):
-                var_per_channel = torch.var(down_block_res_sample, dim=(2,3), unbiased=False)
-                var_per_channel_additional = torch.var(down_block_additional_residual, dim=(2,3), unbiased=False)
+            new_tail = []
+            for res_sample, add_res in zip(tail, down_block_additional_residuals):
+                # 해상도 맞추기
+                if add_res.shape[2:] != res_sample.shape[2:]:
+                    add_res = F.interpolate(add_res, size=res_sample.shape[2:], mode="nearest")
+                # 채널별 분산 계산
+                var_res = torch.var(res_sample, dim=(2, 3), unbiased=False).mean(0)
+                var_add = torch.var(add_res,    dim=(2, 3), unbiased=False).mean(0)
+                # 상/하위 10% 인덱스
+                k = max(1, int(res_sample.size(1) * 0.1))
+                low_idx  = torch.topk(var_res,  k, largest=False).indices
+                high_idx = torch.topk(var_add,  k, largest=True).indices
+                # 블렌딩
+                # 1) add_res에서 high_idx 채널만 뽑아서, 새로운 텐서 add_for_blend 에 low_idx 위치에 채워 넣기
+                add_for_blend = torch.zeros_like(res_sample)           # [B, C, H, W]
+                add_for_blend[:, low_idx] = add_res[:, high_idx]       # low_idx 위치엔 high_idx 채널을
 
-                var_per_channel_mean = var_per_channel.mean(dim=0)
-                var_per_channel_additional_mean = var_per_channel_additional.mean(dim=0)
+                # 2) 원본·컨트롤 블렌딩값 계산
+                blend_vals = alpha * res_sample + (1 - alpha) * add_for_blend
 
-                num_channels = down_block_res_sample.shape[1]
-                k = int(num_channels * 0.1)
+                # 3) low_idx 위치만 blend_vals 쓰고, 나머지는 원본 res_sample 유지하는 마스크 생성
+                mask = torch.zeros(res_sample.shape[1], dtype=torch.bool, device=res_sample.device)
+                mask[low_idx] = True
+                mask = mask.view(1, -1, 1, 1)  # [1, C, 1, 1] 브로드캐스트용
 
-                _, low_var_indices = torch.topk(var_per_channel_mean, k=k, largest=False)
-                _, high_var_indices = torch.topk(var_per_channel_additional_mean, k=k, largest=True)
-                
-                blended = down_block_res_sample.clone()
-                blended[:,low_var_indices] = alpha*down_block_res_sample[:,low_var_indices] + (1-alpha)*down_block_additional_residual[:,high_var_indices]
-                new_down_block_res_samples = new_down_block_res_samples + (blended,)
+                # 4) where 연산으로 한 번에 교체
+                blended = torch.where(mask, blend_vals, res_sample)
 
-            down_block_res_samples = new_down_block_res_samples
+                new_tail.append(blended)
+
+            # 다시 tuple로
+            down_block_res_samples = tuple(head + new_tail)
+
 
         # 4. mid
         if self.mid_block is not None:
@@ -1332,36 +1351,54 @@ class MyUNet2DConditionModel(
         if is_controlnet:
             sample = sample + mid_block_additional_residual
 
-        # 5. up
         for i, upsample_block in enumerate(self.up_blocks):
             is_final_block = i == len(self.up_blocks) - 1
 
-            res_samples = down_block_res_samples[-len(upsample_block.resnets) :]
-            down_block_res_samples = down_block_res_samples[: -len(upsample_block.resnets)]
+            # 원본 skip-connections
+            res_samples = down_block_res_samples[-len(upsample_block.resnets):]
+            down_block_res_samples = down_block_res_samples[:-len(upsample_block.resnets)]
 
-            # if we have not reached the final block and need to forward the
-            # upsample size, we do it here
+            # upsample_size 결정
             if not is_final_block and forward_upsample_size:
                 upsample_size = down_block_res_samples[-1].shape[2:]
 
-            if hasattr(upsample_block, "has_cross_attention") and upsample_block.has_cross_attention:
-                sample = upsample_block(
-                    hidden_states=sample,
-                    temb=emb,
-                    res_hidden_states_tuple=res_samples,
-                    encoder_hidden_states=encoder_hidden_states,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    upsample_size=upsample_size,
-                    attention_mask=attention_mask,
-                    encoder_attention_mask=encoder_attention_mask,
-                )
-            else:
-                sample = upsample_block(
-                    hidden_states=sample,
-                    temb=emb,
-                    res_hidden_states_tuple=res_samples,
-                    upsample_size=upsample_size,
-                )
+            # # ─── 디버깅: 현재 sample & skip-connections 크기 출력 ───
+            # print(f"[debug] upsample idx={i}")
+            # print(f"  before align: sample.shape={sample.shape}")
+            # for j, res in enumerate(res_samples):
+            #     print(f"    res_samples[{j}].shape={res.shape}")
+            # # ─────────────────────────────────────────────────────────
+
+            # ─── Skip-connection 해상도를 현재 hidden_states 해상도에 맞춰 보간 ───
+            aligned = []
+            for res in res_samples:
+                if res.shape[2:] != sample.shape[2:]:
+                    res = F.interpolate(res, size=sample.shape[2:], mode="nearest")
+                aligned.append(res)
+            res_samples = tuple(aligned)
+            # ─────────────────────────────────────────────────────────
+
+            # # ─── 디버깅: 정렬 후 크기 출력 및 ResNet kernel size 확인 ───
+            # print(f"  after  align: sample.shape={sample.shape}")
+            # for j, res in enumerate(res_samples):
+            #     print(f"    aligned res_samples[{j}].shape={res.shape}")
+            # for j, resnet in enumerate(upsample_block.resnets):
+            #     # 각 resnet 안의 첫 conv_layer kernel_size 출력
+            #     ks1 = getattr(resnet, "conv1", None).kernel_size if hasattr(resnet, "conv1") else None
+            #     ks2 = getattr(resnet, "conv2", None).kernel_size if hasattr(resnet, "conv2") else None
+            #     print(f"    resnet[{j}].conv1.kernel_size={ks1}, conv2.kernel_size={ks2}")
+            # # ─────────────────────────────────────────────────────────
+
+            sample = upsample_block(
+                hidden_states=sample,
+                temb=emb,
+                res_hidden_states_tuple=res_samples,
+                encoder_hidden_states=encoder_hidden_states,
+                cross_attention_kwargs=cross_attention_kwargs,
+                attention_mask=attention_mask,
+                encoder_attention_mask=encoder_attention_mask,
+                upsample_size=upsample_size,
+            )
 
         # 6. post-process
         if self.conv_norm_out:

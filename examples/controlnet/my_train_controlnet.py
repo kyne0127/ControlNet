@@ -57,6 +57,7 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
+from accelerate import DistributedDataParallelKwargs
 
 if is_wandb_available():
     import wandb
@@ -743,11 +744,13 @@ def main(args):
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
 
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        kwargs_handlers=[ddp_kwargs]
     )
 
     # Disable AMP for MPS.
@@ -1073,6 +1076,11 @@ def main(args):
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                 )
+
+                # unet 이 필요로 하는 개수만큼 잘라 줍니다
+                num_needed = len(unet.down_blocks)  # 만약 unet.down_blocks 개수가 곧
+                down_block_res_samples = down_block_res_samples[:num_needed]
+                mid_block_res_sample      = mid_block_res_sample[:num_needed]
 
                 # Predict the noise residual
                 model_pred = unet(
