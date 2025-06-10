@@ -1307,8 +1307,9 @@ class MyUNet2DConditionModel(
                 # 블렌딩
                 # 1) add_res에서 high_idx 채널만 뽑아서, 새로운 텐서 add_for_blend 에 low_idx 위치에 채워 넣기
                 add_for_blend = torch.zeros_like(res_sample)           # [B, C, H, W]
-                add_for_blend[:, low_idx] = add_res[:, high_idx]       # low_idx 위치엔 high_idx 채널을
-
+                # add_for_blend[:, low_idx] = add_res[:, high_idx]       # low_idx 위치엔 high_idx 채널을
+                add_for_blend = add_for_blend.scatter(1, low_idx.view(1, -1, 1, 1).expand_as(res_sample[:, low_idx]), add_res[:, high_idx])
+                
                 # 2) 원본·컨트롤 블렌딩값 계산
                 blend_vals = alpha * res_sample + (1 - alpha) * add_for_blend
 
