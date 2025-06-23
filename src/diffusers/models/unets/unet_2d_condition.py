@@ -65,6 +65,8 @@ class UNet2DConditionOutput(BaseOutput):
             The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
     """
 
+    down_block_res_samples: Tuple[torch.Tensor, ...]
+    mid_block_res_sample: torch.Tensor
     sample: torch.Tensor = None
 
 
@@ -1228,15 +1230,17 @@ class UNet2DConditionModel(
             down_block_res_samples += res_samples
 
         if is_controlnet:
-            new_down_block_res_samples = ()
+            # ControlNet-XS: skip the initial conv_in skip feature (index 0)
+            # block outputs start from index 1
+            fused = []
+            for i, add in enumerate(down_block_additional_residuals):
+                print(f"Fusing downsample block {i + 1} with additional residuals")
+                print(f"Downsample block shape: {down_block_res_samples[i + 1].shape}, additional residuals shape: {add.shape}")
+                fused_sample = down_block_res_samples[i + 1] + add
+                print(f"Fused shape: {fused_sample.shape}")
+                fused.append(fused_sample)
+            down_block_res_samples = tuple(fused)
 
-            for down_block_res_sample, down_block_additional_residual in zip(
-                down_block_res_samples, down_block_additional_residuals
-            ):
-                down_block_res_sample = down_block_res_sample + down_block_additional_residual
-                new_down_block_res_samples = new_down_block_res_samples + (down_block_res_sample,)
-
-            down_block_res_samples = new_down_block_res_samples
 
         # 4. mid
         if self.mid_block is not None:
@@ -1251,6 +1255,8 @@ class UNet2DConditionModel(
                 )
             else:
                 sample = self.mid_block(sample, emb)
+            
+            mid_block_res_sample = sample
 
             # To support T2I-Adapter-XL
             if (
@@ -1305,6 +1311,10 @@ class UNet2DConditionModel(
             unscale_lora_layers(self, lora_scale)
 
         if not return_dict:
-            return (sample,)
+            return (sample, tuple(down_block_res_samples), mid_block_res_sample)
 
-        return UNet2DConditionOutput(sample=sample)
+        return UNet2DConditionOutput(
+            down_block_res_samples=tuple(down_block_res_samples),
+            mid_block_res_sample=mid_block_res_sample,
+            sample=sample,
+        )

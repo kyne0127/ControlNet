@@ -3,6 +3,8 @@ from ...utils import is_flax_available, is_torch_available
 
 if is_torch_available():
     from .mycontrolnet import MyControlNetModel
+
+    from .controlnet_simplified import ControlNetSimplifiedModel
     
     from .controlnet import ControlNetModel, ControlNetOutput
     from .controlnet_flux import FluxControlNetModel, FluxControlNetOutput, FluxMultiControlNetModel
