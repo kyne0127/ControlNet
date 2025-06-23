@@ -1284,47 +1284,134 @@ class MyUNet2DConditionModel(
         """
         수정한 부분
         """
-        if is_controlnet:
-            # down_block_additional_residuals 길이만큼만 blend
-            num_add = len(down_block_additional_residuals)
-            # 원본 리스트 분할
-            orig = list(down_block_res_samples)
-            head = orig[:-num_add]             # 섞지 않을 앞부분
-            tail = orig[-num_add:]             # blend 할 마지막 부분
+        # if is_controlnet:
+        #     # down_block_additional_residuals 길이만큼만 blend
+        #     num_add = len(down_block_additional_residuals)
+        #     # 원본 리스트 분할
+        #     orig = list(down_block_res_samples)
+        #     head = orig[:-num_add]             # 섞지 않을 앞부분
+        #     tail = orig[-num_add:]             # blend 할 마지막 부분
 
-            new_tail = []
-            for res_sample, add_res in zip(tail, down_block_additional_residuals):
-                # 해상도 맞추기
-                if add_res.shape[2:] != res_sample.shape[2:]:
-                    add_res = F.interpolate(add_res, size=res_sample.shape[2:], mode="nearest")
-                # 채널별 분산 계산
-                var_res = torch.var(res_sample, dim=(2, 3), unbiased=False).mean(0)
-                var_add = torch.var(add_res,    dim=(2, 3), unbiased=False).mean(0)
-                # 상/하위 10% 인덱스
-                k = max(1, int(res_sample.size(1) * 0.1))
-                low_idx  = torch.topk(var_res,  k, largest=False).indices
-                high_idx = torch.topk(var_add,  k, largest=True).indices
-                # 블렌딩
-                # 1) add_res에서 high_idx 채널만 뽑아서, 새로운 텐서 add_for_blend 에 low_idx 위치에 채워 넣기
-                add_for_blend = torch.zeros_like(res_sample)           # [B, C, H, W]
-                # add_for_blend[:, low_idx] = add_res[:, high_idx]       # low_idx 위치엔 high_idx 채널을
-                add_for_blend = add_for_blend.scatter(1, low_idx.view(1, -1, 1, 1).expand_as(res_sample[:, low_idx]), add_res[:, high_idx])
+        #     new_tail = []
+        #     for res_sample, add_res in zip(tail, down_block_additional_residuals):
+        #         # 해상도 맞추기
+        #         if add_res.shape[2:] != res_sample.shape[2:]:
+        #             add_res = F.interpolate(add_res, size=res_sample.shape[2:], mode="nearest")
+        #         # 채널별 분산 계산
+        #         var_res = torch.var(res_sample, dim=(2, 3), unbiased=False).mean(0)
+        #         var_add = torch.var(add_res,    dim=(2, 3), unbiased=False).mean(0)
+        #         # 상/하위 10% 인덱스
+        #         k = max(1, int(res_sample.size(1) * 0.1))
+        #         low_idx  = torch.topk(var_res,  k, largest=False).indices
+        #         high_idx = torch.topk(var_add,  k, largest=True).indices
+        #         # 블렌딩
+        #         # 1) add_res에서 high_idx 채널만 뽑아서, 새로운 텐서 add_for_blend 에 low_idx 위치에 채워 넣기
+        #         add_for_blend = torch.zeros_like(res_sample)           # [B, C, H, W]
+        #         # add_for_blend[:, low_idx] = add_res[:, high_idx]       # low_idx 위치엔 high_idx 채널을
+        #         add_for_blend = add_for_blend.scatter(1, low_idx.view(1, -1, 1, 1).expand_as(res_sample[:, low_idx]), add_res[:, high_idx])
                 
-                # 2) 원본·컨트롤 블렌딩값 계산
-                blend_vals = alpha * res_sample + (1 - alpha) * add_for_blend
+        #         # 2) 원본·컨트롤 블렌딩값 계산
+        #         blend_vals = alpha * res_sample + (1 - alpha) * add_for_blend
 
-                # 3) low_idx 위치만 blend_vals 쓰고, 나머지는 원본 res_sample 유지하는 마스크 생성
-                mask = torch.zeros(res_sample.shape[1], dtype=torch.bool, device=res_sample.device)
-                mask[low_idx] = True
-                mask = mask.view(1, -1, 1, 1)  # [1, C, 1, 1] 브로드캐스트용
+        #         # 3) low_idx 위치만 blend_vals 쓰고, 나머지는 원본 res_sample 유지하는 마스크 생성
+        #         mask = torch.zeros(res_sample.shape[1], dtype=torch.bool, device=res_sample.device)
+        #         mask[low_idx] = True
+        #         mask = mask.view(1, -1, 1, 1)  # [1, C, 1, 1] 브로드캐스트용
 
-                # 4) where 연산으로 한 번에 교체
-                blended = torch.where(mask, blend_vals, res_sample)
+        #         # 4) where 연산으로 한 번에 교체
+        #         blended = torch.where(mask, blend_vals, res_sample)
 
-                new_tail.append(blended)
+        #         new_tail.append(blended)
 
-            # 다시 tuple로
-            down_block_res_samples = tuple(head + new_tail)
+        #     # 다시 tuple로
+        #     down_block_res_samples = tuple(head + new_tail)
+
+        # # ─── ControlNet blending using external alpha parameter ─────────────────────────
+        # if is_controlnet and down_block_additional_residuals:
+        #     new_res = []
+        #     add_idx = 0
+
+        #     print(f"[debug] down_block_additional_residuals={len(down_block_additional_residuals)}")
+
+        #     for res_sample in down_block_res_samples:
+        #         # 블렌딩 대상이 남아 있고 채널 수가 맞을 때만 수행
+        #         if (
+        #             add_idx < len(down_block_additional_residuals)
+        #             and res_sample.shape[1] == down_block_additional_residuals[add_idx].shape[1]
+        #         ):
+        #             add_res = down_block_additional_residuals[add_idx]
+
+        #             print(f"[debug] down_block_res_samples[{add_idx}].shape={res_sample.shape}")
+        #             print(f"[debug] down_block_additional_residuals[{add_idx}].shape={add_res.shape}")
+        #             # 1) 해상도 맞추기
+        #             if add_res.shape[2:] != res_sample.shape[2:]:
+        #                 add_res = F.interpolate(add_res, size=res_sample.shape[2:], mode="nearest")
+
+        #             # 2) 채널별 분산 계산
+        #             var_res = torch.var(res_sample, dim=(2, 3), unbiased=False).mean(0)  # [C]
+        #             var_add = torch.var(add_res,    dim=(2, 3), unbiased=False).mean(0)  # [C]
+
+        #             # 3) alpha를 이용한 soft gate 계산
+        #             #    (alpha는 외부에서 전달된 파라미터)
+        #             print(f"[debug] var_res={var_res.shape}, var_add={var_add.shape}")
+        #             print(f"[debug] alpha={alpha}")
+        #             diff = var_add - var_res
+        #             gate = torch.sigmoid(diff.view(1, -1, 1, 1) * alpha)
+
+        #             # 4) soft blending
+        #             blended = gate * add_res + (1 - gate) * res_sample
+        #             new_res.append(blended)
+
+        #             add_idx += 1
+        #         else:
+        #             # 블렌딩 대상이 아니면 원본 그대로
+        #             new_res.append(res_sample)
+
+        #     down_block_res_samples = tuple(new_res)
+        # ─── STE 기반 Top-k Soft→Hard Blending ─────────────────────────
+        if is_controlnet and down_block_additional_residuals:
+            new_res = []
+            add_idx = 0
+
+            for res_sample in down_block_res_samples:
+                if add_idx < len(down_block_additional_residuals) and res_sample.shape[1] == down_block_additional_residuals[add_idx].shape[1]:
+                    add_res = down_block_additional_residuals[add_idx]
+
+                    # 1) spatial 해상도 맞추기
+                    if add_res.shape[2:] != res_sample.shape[2:]:
+                        add_res = F.interpolate(add_res, size=res_sample.shape[2:], mode="nearest")
+
+                    # 2) 채널별 분산 계산
+                    var_res = torch.var(res_sample, dim=(2, 3), unbiased=False).mean(0)  # [C]
+                    var_add = torch.var(add_res,    dim=(2, 3), unbiased=False).mean(0)  # [C]
+
+                    # 3) continuous gate 계산 (sigmoid)
+                    diff = var_add - var_res                                       # [C]
+                    g = torch.sigmoid(diff.view(1, -1, 1, 1) * alpha)              # [1, C, 1, 1]
+                    print(f"[debug] var_res={var_res.shape}, var_add={var_add.shape}")
+                    print(f"[debug] alpha={alpha}")
+
+                    # 4) hard top-k mask 생성
+                    C = g.shape[1]
+                    k = max(1, int(C * 0.1))
+                    flat_g = g.view(-1)                                             # [C]
+                    topk_idx = torch.topk(flat_g, k, largest=True).indices         # top-k 인덱스
+                    mask = torch.zeros_like(flat_g)
+                    mask[topk_idx] = 1
+                    mask = mask.view_as(g)                                         # [1, C, 1, 1]
+
+                    # 5) STE 적용: forward는 hard mask, backward는 continuous g 사용
+                    gate = mask + (g - g.detach())
+
+                    # 6) soft blend
+                    blended = gate * add_res + (1 - gate) * res_sample
+                    new_res.append(blended)
+                    add_idx += 1
+                else:
+                    new_res.append(res_sample)
+
+            down_block_res_samples = tuple(new_res)
+        # ───────────────────────────────────────────────────────────────────────────
 
 
         # 4. mid
