@@ -24,8 +24,6 @@ This repository provides examples and instructions for fine-tuning ControlNet on
 1. **Clone and install Diffusers**
 
    ```bash
-   git clone https://github.com/huggingface/diffusers
-   cd diffusers
    pip install -e .
    ```
 2. **Install example requirements**
