@@ -2,8 +2,8 @@ name: Nightly and release tests on main/release branch
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *" # every day at midnight
+  # schedule:
+  #   - cron: "0 0 * * *" # every day at midnight
 
 env:
   DIFFUSERS_IS_CI: yes
